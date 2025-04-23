@@ -4,7 +4,10 @@
   "description": "Signaling server for a p2p encryptedd messaging application",
   "main": "signaling.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start:web": "WEB_PORT=8082 node server.js",
+    "start:auth": "node auth.js",
+    "start:signal": "node signaling.js"
   },
   "keywords": [],
   "author": "",

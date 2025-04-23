@@ -137,7 +137,7 @@ async function handleAnswer(data) {
             console.log("Applied pending ICE candidate.");
         }
     } else {
-        console.log("Ignoring answer because connection is already stable.");
+        console.log("Why are we here?");
     }
 }
 
