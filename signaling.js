@@ -79,8 +79,8 @@ wss.on("connection", (ws, req) => {
     });
 });
 
-server.listen(8081, () => {
-    console.log("signaling server running on wss://localhost:8081");
+server.listen(8080, () => {
+    console.log("signaling server running on wss://localhost:8080");
 });
 
 // HMAC Signature function

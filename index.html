@@ -1,21 +1,44 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebRTC P2P Chat</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>P2P E2E Chat</title>
+  <script defer src="script.js"></script>
 </head>
 <body>
-    <h2>WebRTC P2P Chat</h2>
-    <input id="username" placeholder="Enter your username" />
-    <input id="target" placeholder="Enter target username" />
-    <button onclick="connect()">Connect</button>
-    <button onclick="startCall()">Start Call</button>
-    <br>
-    <input id="messageInput" placeholder="Type a message">
-    <button id="sendButton">Send</button>
-    <div id="chat"></div>
+  <!-- SIGNUP FORM -->
+  <section id="signup-section">
+    <h3>Sign Up</h3>
+    <input id="signup-username" placeholder="Username" />
+    <input id="signup-password" type="password" placeholder="Password" />
+    <button id="signup-btn">Sign Up</button>
+  </section>
 
-    <script src="script.js"></script>
+  <!-- LOGIN FORM -->
+  <section id="login-section">
+    <h3>Login</h3>
+    <input id="username" placeholder="Username" />
+    <input id="password" type="password" placeholder="Password" />
+    <button id="login-btn">Login</button>
+  </section>
+
+  <!-- CONNECT TO SIGNALING -->
+  <section id="connect-section" style="display:none;">
+    <button id="connect-btn">Connect to Signaling</button>
+  </section>
+
+  <!-- CALL CONTROLS -->
+  <section id="call-section" style="display:none;">
+    <input id="target" placeholder="Peer Username" />
+    <button id="start-call-btn">Start Call</button>
+  </section>
+
+  <!-- CHAT SECTION -->
+  <section id="chat-section" style="display:none;">
+    <input id="messageInput" placeholder="Type a message" />
+    <button id="send-btn">Send</button>
+    <div id="chat"></div>
+  </section>
 </body>
 </html>

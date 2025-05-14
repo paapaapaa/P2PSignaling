@@ -1,315 +1,290 @@
+// script.js
 
 const SIGNALING_SERVER = "wss://localhost:8080";
-const AUTH_SERVER = "http://localhost:3000/login";
+const AUTH_SERVER = "http://localhost:3000";
 
-
-
-let ws, peerConnection, dataChannel;
-let username, target;
-let pendingCandidates = []; //pending ICE candidates.
-
-// Function to get a JWT token
-async function getToken(username) {
-    try {
-        const response = await fetch(AUTH_SERVER, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ username, password: "password123" }),
-        });
-        const data = await response.json();
-        return data.token;
-    } catch (error) {
-        console.error("Authentication failed:", error);
-    }
+// IndexedDB helpers for private key storage
+function openKeyDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('p2papp-keys', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('keys');
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
 }
 
-// Function to connect to WebSocket signaling server
-async function connect() {
-    username = document.getElementById("username").value;
-    target = document.getElementById("target").value;
-
-    if (!username || !target) {
-        alert("Enter both your username and target username!");
-        return;
-    }
-
-    const token = await getToken(username);
-    console.log("Token received:", token);
-
-    ws = new WebSocket(`${SIGNALING_SERVER}?token=${token}`);
-    
-    ws.onopen = () => console.log("Connected to signaling server!");
-    ws.onmessage = (event) => handleSignalingMessage(JSON.parse(event.data));
-    ws.onclose = () => console.log("Disconnected from server");
+async function storePrivateKey(username, keyJwk) {
+  const db = await openKeyDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('keys', 'readwrite');
+    tx.objectStore('keys').put(keyJwk, username);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
 }
 
-// Handle incoming WebSocket messages
-function handleSignalingMessage(data) {
-    console.log(`Received ${data.type}`);
-    switch (data.type) {
-        case "offer":
-            handleOffer(data);
-            break;
-        case "answer":
-            handleAnswer(data);
-            break;
-        case "ice-candidate":
-            handleICECandidate(data);
-            break;
-    }
+async function getPrivateKey(username) {
+  const db = await openKeyDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('keys', 'readonly');
+    const req = tx.objectStore('keys').get(username);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
 }
 
-// Create WebRTC Peer Connection
-function createPeerConnection() {
-    peerConnection = new RTCPeerConnection({
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
-    });
+// Global state
+let ws;
+let peerConnection;
+let dataChannel;
+let pendingCandidates = [];
+let jwtToken;
+let myPrivateKey;
+let mySymmetricKey;
+let username;
 
-    peerConnection.onicecandidate = (event) => {
-        if (event.candidate) {
-            ws.send(JSON.stringify({
-                type: "ice-candidate",
-                target,
-                candidate: event.candidate
-            }));
-        }
-    };
+window.addEventListener('load', () => {
+  document.getElementById('signup-btn').onclick = handleSignup;
+  document.getElementById('login-btn').onclick = handleLogin;
+  document.getElementById('connect-btn').onclick = connectSignaling;
+  document.getElementById('start-call-btn').onclick = startCall;
+  document.getElementById('send-btn').onclick = sendEncryptedMessage;
+});
 
-    peerConnection.ondatachannel = (event) => {
-        dataChannel = event.channel;
-        setupDataChannel();
-    };
-
-    console.log("PeerConnection created");
-}
-
-// Initiate WebRTC Call
-async function startCall() {
-    createPeerConnection();
-
-    dataChannel = peerConnection.createDataChannel("chat");
-    setupDataChannel();
-
-    const offer = await peerConnection.createOffer();
-    await peerConnection.setLocalDescription(offer);
-
-    // Include sender: username in the offer
-    ws.send(JSON.stringify({ 
-        type: "offer", 
-        target, 
-        sender: username, 
-        offer 
-    }));
-}
-
-// Handle Incoming Offer
-async function handleOffer(data) {
-    createPeerConnection();
-    
-    await peerConnection.setRemoteDescription(data.offer);
-    console.log("Remote offer set successfully.");
-
-    pendingCandidates.forEach(candidateData => {
-        const candidate = new RTCIceCandidate(candidateData);
-        peerConnection.addIceCandidate(candidate).catch(console.error);
-    });
-    pendingCandidates = [];
-
-    const answer = await peerConnection.createAnswer();
-    await peerConnection.setLocalDescription(answer);
-
-    // Send the answer to the CALLER (data.sender), not data.target
-    ws.send(JSON.stringify({ 
-        type: "answer", 
-        target: data.sender, 
-        answer: peerConnection.localDescription 
-    }));
-}
-
-async function handleAnswer(data) {
-    if (!peerConnection.remoteDescription) {
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
-        console.log("Remote answer set successfully.");
-        
-        // Apply stored ICE candidates
-        while (pendingCandidates.length) {
-            await peerConnection.addIceCandidate(pendingCandidates.shift());
-            console.log("Applied pending ICE candidate.");
-        }
-    } else {
-        console.log("Why are we here?");
-    }
-}
-
-
-
-
-
-
-// Handle ICE Candidate
-async function handleICECandidate(data) {
-    const candidateData = data.candidate; // Store the raw candidate object
-
-    if (peerConnection.remoteDescription) {
-        // If the remote description is set, add the ICE candidate directly
-        await peerConnection.addIceCandidate(new RTCIceCandidate(candidateData));
-        console.log("Successfully added ICE candidate.");
-    } else {
-        // If the remote description is not set yet, store the raw candidate data
-        console.log("No remote description yet, storing ICE candidate.");
-        pendingCandidates.push(candidateData); // Store raw candidate data
-    }
-}
-
-
-
-// Setup DataChannel for Messaging
-function setupDataChannel() {
-    dataChannel.onopen = async() => {
-        
-        console.log("Data channel open!");
-        
-        const keyPair = await generateKeyPair();
-        const pubKey = await window.crypto.subtle.exportKey("raw",keyPair.publicKey);
-
-        dataChannel.send(JSON.stringify({type: "publicKey", key: Array.from(new Uint8Array(pubKey))}));
-
-        myPrivateKey = keyPair.privateKey;
-
-
-    };
-
-
-    dataChannel.onmessage = async (event) => {
-        const message = JSON.parse(event.data);
-        
-        if (message.type === "publicKey") {
-            const peerPubKeyData = new Uint8Array(message.key).buffer;
-            
-            const peerPublicKey = await window.crypto.subtle.importKey(
-                "raw",
-                peerPubKeyData,
-                { name: "ECDH", namedCurve: "P-256" },
-                true,
-                []
-            );
-    
-            // Derive shared secret
-            const sharedSecret = await window.crypto.subtle.deriveKey(
-                { name: "ECDH", public: peerPublicKey },
-                myPrivateKey, 
-                { name: "AES-GCM", length: 256 },
-                true,
-                ["encrypt", "decrypt"]
-            );
-    
-            console.log("Shared encryption key established!");
-            mySymmetricKey = sharedSecret; 
-        }
-        if (message.type === "encryptedMessage") {
-            console.log(message)
-            const decryptedText = await decryptMessage(message);
-            console.log("Received message:", decryptedText);
-            document.getElementById("chat").innerHTML += `<p>${target}: ${decryptedText}</p>`;
-        }
-    };
-
-   /* dataChannel.onmessage = (event) => {
-        const chat = document.getElementById("chat");
-        chat.innerHTML += `<p>${target}: ${event.data}</p>`;
-    };
-    */
-}
-
-// Send Chat Message
-/*function sendMessage() {
-    const message = document.getElementById("messageInput").value;
-    if (dataChannel && dataChannel.readyState === "open") {
-        dataChannel.send(message);
-        document.getElementById("chat").innerHTML += `<p> You: ${message}</p>`;
-    }
-}
-    */
-
-
+// Generate ECDH key pair
 async function generateKeyPair() {
-    const keyPair = await window.crypto.subtle.generateKey(
-        { name: "ECDH", namedCurve: "P-256" },
-        true, // can be exported
-        ["deriveKey"]
-    );
-    return keyPair;
+  return await window.crypto.subtle.generateKey(
+    { name: 'ECDH', namedCurve: 'P-256' },
+    true,
+    ['deriveKey']
+  );
 }
 
+// Handle user signup
+async function handleSignup() {
+  const user = document.getElementById('signup-username').value;
+  const pass = document.getElementById('signup-password').value;
+  if (!user || !pass) return alert('Username and password required');
 
+  // Generate key pair
+  const keyPair = await generateKeyPair();
+  const pubJwk = await window.crypto.subtle.exportKey('jwk', keyPair.publicKey);
+  const prvJwk = await window.crypto.subtle.exportKey('jwk', keyPair.privateKey);
 
-async function encryptMessage(message) {
-    console.log("origmsg: ", message)
-    const encoder = new TextEncoder();
-    const encodedMessage = encoder.encode(message);
-    const iv = window.crypto.getRandomValues(new Uint8Array(12)); // Initialization vector
-    console.log("msg: ",encodedMessage)
+  // Send to server
+  const res = await fetch(`${AUTH_SERVER}/signup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: user, password: pass, pubkey: JSON.stringify(pubJwk) })
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    return alert('Signup failed: ' + err.error);
+  }
 
-    console.log("symkey: ")
-    await logSymmetricKey(mySymmetricKey, "Local derived key");
-
-    const encrypted = await window.crypto.subtle.encrypt(
-        { name: "AES-GCM", iv },
-        mySymmetricKey,
-        encodedMessage
-    );
-    console.log("data: ", encrypted)
-
-    return { iv: Array.from(iv), data: Array.from(new Uint8Array(encrypted)) };
+  // Store private key locally
+  await storePrivateKey(user, JSON.stringify(prvJwk));
+  alert('Signup successful! Please log in.');
 }
 
-// Sending an encrypted message
-async function sendMessage(message) {
-    const encrypted = await encryptMessage(message);
-    console.log("encrypted: ", encrypted)
-    dataChannel.send(JSON.stringify({ type: "encryptedMessage", ...encrypted }));
+// Handle user login
+async function handleLogin() {
+  username = document.getElementById('username').value;
+  const pass = document.getElementById('password').value;
+  if (!username || !pass) return alert('Username and password required');
+
+  const res = await fetch(`${AUTH_SERVER}/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password: pass })
+  });
+  if (!res.ok) return alert('Login failed');
+
+  const data = await res.json();
+  jwtToken = data.token;
+
+  // Load private key
+  const stored = await getPrivateKey(username);
+  myPrivateKey = await window.crypto.subtle.importKey(
+    'jwk',
+    JSON.parse(stored),
+    { name: 'ECDH', namedCurve: 'P-256' },
+    false,
+    ['deriveKey']
+  );
+
+  // Show connect UI
+  document.getElementById('signup-section').style.display = 'none';
+  document.getElementById('login-section').style.display = 'none';
+  document.getElementById('connect-section').style.display = '';
 }
 
-
-
-async function decryptMessage(encrypted) {
-    const iv = new Uint8Array(encrypted.iv);
-    const data = new Uint8Array(encrypted.data).buffer;
-    console.log("data: ", data)
-
-    console.log("symkey: ")
-    await logSymmetricKey(mySymmetricKey, "Local derived key");
-
-
-
-    const decrypted = await window.crypto.subtle.decrypt(
-        { name: "AES-GCM", iv },
-        mySymmetricKey,
-        data
-    );
-
-    console.log("Decruption: \n",decrypted)
-
-    return new TextDecoder().decode(decrypted);
+// Connect to signaling server
+function connectSignaling() {
+  ws = new WebSocket(`${SIGNALING_SERVER}?token=${jwtToken}`);
+  ws.onopen = () => {
+    console.log('Connected to signaling server');
+    document.getElementById('connect-section').style.display = 'none';
+    document.getElementById('call-section').style.display = '';
+  };
+  ws.onmessage = evt => handleSignalingMessage(JSON.parse(evt.data));
+  ws.onclose = () => console.log('Signaling connection closed');
+  ws.onerror = err => console.error('WS error', err);
 }
 
+// Start a call with a target
+async function startCall() {
+  const target = document.getElementById('target').value;
+  if (!target) return alert('Enter peer username');
 
-async function logSymmetricKey(key, label) {
-    const exported = await window.crypto.subtle.exportKey("raw", key);
-    const keyBytes = new Uint8Array(exported);
-    console.log(`${label} (length: ${keyBytes.length}):`, Array.from(keyBytes));
-}
+  // Fetch peer public key and derive symmetric key
+  const peerPubKey = await fetchPeerPubKey(target);
+  mySymmetricKey = await window.crypto.subtle.deriveKey(
+    { name: 'ECDH', public: peerPubKey },
+    myPrivateKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
 
-
-document.getElementById("sendButton").onclick = async () => {
-    const input = document.getElementById("messageInput");
-    const message = input.value.trim();
-
-    if (message) {
-        await sendMessage(message);
-        document.getElementById("chat").innerHTML += `<p>You: ${message}</p>`;
-        input.value = "";
-    } else {
-        console.warn("Tried to send empty message.");
+  // Create RTCPeerConnection
+  peerConnection = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+  peerConnection.onicecandidate = e => {
+    if (e.candidate) {
+      ws.send(JSON.stringify({ type: 'ice-candidate', target, candidate: e.candidate }));
     }
-};
+  };
+  peerConnection.ondatachannel = e => {
+    dataChannel = e.channel;
+    setupDataChannel();
+  };
+
+  // Caller creates DataChannel
+  dataChannel = peerConnection.createDataChannel('chat');
+  setupDataChannel();
+
+  // Create and send offer
+  const offer = await peerConnection.createOffer();
+  await peerConnection.setLocalDescription(offer);
+  ws.send(JSON.stringify({ type: 'offer', target, offer, sender: username }));
+
+  // Show chat UI
+  document.getElementById('call-section').style.display = 'none';
+  document.getElementById('chat-section').style.display = '';
+}
+
+// Handle incoming signaling messages
+async function handleSignalingMessage(msg) {
+  switch (msg.type) {
+    case 'offer':
+
+      // Derive symmetric key for callee
+      try {
+        const peerPub = await fetchPeerPubKey(msg.sender);
+        mySymmetricKey = await window.crypto.subtle.deriveKey(
+          { name: 'ECDH', public: peerPub },
+          myPrivateKey,
+          { name: 'AES-GCM', length: 256 },
+          false,
+          ['encrypt', 'decrypt']
+        );
+      } catch (e) {
+        console.error('Failed to derive symmetric key for incoming call', e);
+        return;
+      }
+      // New incoming call
+      peerConnection = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+      peerConnection.onicecandidate = e => {
+        if (e.candidate) {
+          ws.send(JSON.stringify({ type: 'ice-candidate', target: msg.sender, candidate: e.candidate }));
+        }
+      };
+      peerConnection.ondatachannel = e => {
+        dataChannel = e.channel;
+        setupDataChannel();
+      };
+
+      await peerConnection.setRemoteDescription(msg.offer);
+      for (const c of pendingCandidates) {
+        await peerConnection.addIceCandidate(c);
+      }
+      pendingCandidates = [];
+
+      const answer = await peerConnection.createAnswer();
+      await peerConnection.setLocalDescription(answer);
+      ws.send(JSON.stringify({ type: 'answer', target: msg.sender, answer, sender: username }));
+
+      document.getElementById('call-section').style.display = 'none';
+      document.getElementById('chat-section').style.display = '';
+      break;
+
+    case 'answer':
+      await peerConnection.setRemoteDescription(msg.answer);
+      for (const c of pendingCandidates) {
+        await peerConnection.addIceCandidate(c);
+      }
+      pendingCandidates = [];
+      document.getElementById('chat-section').style.display = '';
+      break;
+
+    case 'ice-candidate':
+      const cand = new RTCIceCandidate(msg.candidate);
+      if (peerConnection && peerConnection.remoteDescription) {
+        await peerConnection.addIceCandidate(cand);
+      } else {
+        pendingCandidates.push(cand);
+      }
+      break;
+  }
+}
+
+// Set up DataChannel event handlers
+function setupDataChannel() {
+  dataChannel.onopen = () => console.log('DataChannel open');
+  dataChannel.onmessage = async e => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'encryptedMessage') {
+      const txt = await decryptMessage(m);
+      document.getElementById('chat').innerHTML += `<p>${m.sender}: ${txt}</p>`;
+    }
+  };
+}
+
+// Send encrypted chat message
+async function sendEncryptedMessage() {
+  const txt = document.getElementById('messageInput').value.trim();
+  if (!txt) return;
+  const iv = window.crypto.getRandomValues(new Uint8Array(12));
+  const encBuf = await window.crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    mySymmetricKey,
+    new TextEncoder().encode(txt)
+  );
+  dataChannel.send(
+    JSON.stringify({ type: 'encryptedMessage', iv: Array.from(iv), data: Array.from(new Uint8Array(encBuf)), sender: username })
+  );
+  document.getElementById('chat').innerHTML += `<p>You: ${txt}</p>`;
+  document.getElementById('messageInput').value = '';
+}
+
+// Public-key helper: fetch peer's public key
+async function fetchPeerPubKey(user) {
+  const res = await fetch(`${AUTH_SERVER}/users/${user}/pubkey`, {
+    headers: { 'Authorization': `Bearer ${jwtToken}` }
+  });
+  if (!res.ok) throw new Error('Failed to fetch peer public key');
+  const { pubkey } = await res.json();
+  return window.crypto.subtle.importKey(
+    'jwk', JSON.parse(pubkey), { name: 'ECDH', namedCurve: 'P-256' }, false, []
+  );
+}
+
+// Decrypt AES-GCM message
+async function decryptMessage({ iv, data }) {
+  const decrypted = await window.crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: new Uint8Array(iv) },
+    mySymmetricKey,
+    new Uint8Array(data).buffer
+  );
+  return new TextDecoder().decode(decrypted);
+}
