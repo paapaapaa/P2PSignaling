@@ -51,15 +51,6 @@ wss.on("connection", (ws, req) => {
         return;
     }
 
-    // Verify HMAC Signature and Timestamp for replay protection
-    /*
-    if (!verifyMessageIntegrity(data)) {
-        console.error("Message integrity check failed!");
-        return;
-    }
-    */
-
-    // ??? Do something doesnt work yet
 
     switch (data.type) {
         case "offer":
